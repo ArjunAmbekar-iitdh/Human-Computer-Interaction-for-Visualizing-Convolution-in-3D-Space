@@ -1,0 +1,186 @@
+﻿using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+using TMPro;
+
+public class CNNAnimator : MonoBehaviour
+{
+    [Header("References")]
+    public CNNVisualizer cnnVisualizer;
+    public TextMeshProUGUI predictionText;
+
+    [Header("Wave Settings")]
+    public float layerDelay = 0.3f;
+    public float fadeDuration = 0.25f;
+
+    private List<LayerData> layers = new List<LayerData>();
+    private Coroutine activeAnimation;
+    private bool isInitialized = false;
+
+    // Stores renderer references and colors for one layer
+    class LayerData
+    {
+        public string name;
+        public Renderer[] renderers;
+        public Color[] startColors;
+        public Color[] targetColors;
+        public Vector3[] startScales;
+        public Vector3[] targetScales;
+    }
+
+    void LateUpdate()
+    {
+        // Wait until visualizer has spawned all layer objects
+        if (!isInitialized)
+        {
+            GameObject test = GameObject.Find("Layer_Output");
+            if (test != null)
+            {
+                CollectLayers();
+                isInitialized = true;
+            }
+        }
+    }
+
+    void CollectLayers()
+    {
+        layers.Clear();
+
+        // Collect in order: input → conv1 → pool1 → conv2 → pool2 → flatten → output
+        string[] layerNames = {
+            "Layer_Input",
+            "Layer_Conv1_ReLU",
+            "Layer_Pool1",
+            "Layer_Conv2_ReLU",
+            "Layer_Pool2",
+            "Layer_Flatten",
+            "Layer_Output"
+        };
+
+        foreach (string name in layerNames)
+        {
+            GameObject obj = GameObject.Find(name);
+            if (obj != null)
+            {
+                LayerData data = new LayerData();
+                data.name = name;
+                data.renderers = obj.GetComponentsInChildren<Renderer>();
+                data.startColors = new Color[data.renderers.Length];
+                data.targetColors = new Color[data.renderers.Length];
+                data.startScales = new Vector3[data.renderers.Length];
+                data.targetScales = new Vector3[data.renderers.Length];
+                layers.Add(data);
+
+                Debug.Log($"Animator collected: {name} ({data.renderers.Length} renderers)");
+            }
+            else
+            {
+                Debug.LogWarning($"Animator could not find: {name}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Call this instead of cnnVisualizer.RunInference directly.
+    /// It captures before/after colors and animates between them.
+    /// </summary>
+    public void RunAnimatedInference(Texture2D tex)
+    {
+        if (!isInitialized || layers.Count == 0)
+        {
+            // Not ready yet, just run directly
+            cnnVisualizer.RunInference(tex);
+            return;
+        }
+
+        // Step 1: Capture current colors
+        foreach (var layer in layers)
+        {
+            for (int i = 0; i < layer.renderers.Length; i++)
+            {
+                layer.startColors[i] = layer.renderers[i].material.color;
+                layer.startScales[i] = layer.renderers[i].transform.localScale;
+            }
+        }
+
+        // Step 2: Let the visualizer update everything instantly
+        cnnVisualizer.RunInference(tex);
+
+        // Step 3: Capture the new target colors
+        foreach (var layer in layers)
+        {
+            for (int i = 0; i < layer.renderers.Length; i++)
+            {
+                layer.targetColors[i] = layer.renderers[i].material.color;
+                layer.targetScales[i] = layer.renderers[i].transform.localScale;
+            }
+        }
+
+        // Step 4: Reset back to old colors
+        foreach (var layer in layers)
+        {
+            for (int i = 0; i < layer.renderers.Length; i++)
+            {
+                layer.renderers[i].material.color = layer.startColors[i];
+                layer.renderers[i].transform.localScale = layer.startScales[i];
+            }
+        }
+
+        // Step 5: Hide prediction text until wave completes
+        string savedText = "";
+        if (predictionText != null)
+        {
+            savedText = predictionText.text;
+            // Don't clear it during drawing — will update at end
+        }
+
+        // Step 6: Animate the wave
+        if (activeAnimation != null)
+            StopCoroutine(activeAnimation);
+        activeAnimation = StartCoroutine(AnimateWave());
+    }
+
+    IEnumerator AnimateWave()
+    {
+        for (int i = 0; i < layers.Count; i++)
+        {
+            yield return StartCoroutine(FadeLayer(layers[i]));
+
+            // Don't delay after the last layer
+            if (i < layers.Count - 1)
+                yield return new WaitForSeconds(layerDelay);
+        }
+
+        activeAnimation = null;
+    }
+
+    IEnumerator FadeLayer(LayerData layer)
+    {
+        float elapsed = 0f;
+
+        while (elapsed < fadeDuration)
+        {
+            elapsed += Time.deltaTime;
+            float t = Mathf.SmoothStep(0f, 1f, elapsed / fadeDuration);
+
+            for (int i = 0; i < layer.renderers.Length; i++)
+            {
+                layer.renderers[i].material.color = Color.Lerp(
+                    layer.startColors[i], layer.targetColors[i], t
+                );
+                layer.renderers[i].transform.localScale = Vector3.Lerp(
+                    layer.startScales[i], layer.targetScales[i], t
+                );
+            }
+
+            yield return null;
+        }
+
+        // Snap to final values
+        for (int i = 0; i < layer.renderers.Length; i++)
+        {
+            layer.renderers[i].material.color = layer.targetColors[i];
+            layer.renderers[i].transform.localScale = layer.targetScales[i];
+        }
+    }
+}
